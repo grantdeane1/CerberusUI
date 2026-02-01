@@ -12,6 +12,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.*
@@ -178,7 +179,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val btManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        val btManager = getSystemService(BLUETOOTH_SERVICE) as BluetoothManager
         btAdapter = btManager.adapter
         bleScanner = btAdapter.bluetoothLeScanner
 
@@ -216,7 +217,7 @@ fun CerberusBenchApp(
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { results ->
+    ) { results: Map<String, Boolean> ->
         val denied = requiredPerms.filter { results[it] != true }
         status = if (denied.isEmpty()) "Permissions granted" else "Missing: ${denied.joinToString()}"
         log(status)
@@ -238,6 +239,7 @@ fun CerberusBenchApp(
                 val addr = dev.address ?: return
 
                 val name = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    @SuppressLint("MissingPermission")
                     val hasConnectPerm =
                         ContextCompat.checkSelfPermission(
                             context,
@@ -247,7 +249,8 @@ fun CerberusBenchApp(
                     if (hasConnectPerm) dev.name ?: result.scanRecord?.deviceName
                     else result.scanRecord?.deviceName
                 } else {
-                    dev.name ?: result.scanRecord?.deviceName
+                    @SuppressLint("MissingPermission")
+                    (dev.name ?: result.scanRecord?.deviceName)
                 }
                 hits[addr] = ScanHit(
                     address = addr,
@@ -343,17 +346,21 @@ fun CerberusBenchApp(
         val callback = object : BluetoothGattCallback() {
 
             override fun onConnectionStateChange(gatt: BluetoothGatt, statusCode: Int, newState: Int) {
-                if (newState == BluetoothProfile.STATE_CONNECTED) {
-                    log("GATT connected. Discovering services…")
-                    gatt.discoverServices()
-                } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                    log("GATT disconnected.")
-                    status = "Disconnected"
-                    runCatching { gatt.close() }
-                    gattHolder.value = null
-                    connectedAddr = null
-                } else {
-                    log("GATT state change: $newState (status=$statusCode)")
+                when (newState) {
+                    BluetoothProfile.STATE_CONNECTED -> {
+                        log("GATT connected. Discovering services…")
+                        gatt.discoverServices()
+                    }
+                    BluetoothProfile.STATE_DISCONNECTED -> {
+                        log("GATT disconnected.")
+                        status = "Disconnected"
+                        runCatching { gatt.close() }
+                        gattHolder.value = null
+                        connectedAddr = null
+                    }
+                    else -> {
+                        log("GATT state change: $newState (status=$statusCode)")
+                    }
                 }
             }
 
@@ -366,12 +373,10 @@ fun CerberusBenchApp(
                 log("Services discovered. Locating notify characteristic…")
 
                 var notifyChar: BluetoothGattCharacteristic? = null
-                var rxChar: BluetoothGattCharacteristic? = null
 
                 for (svc in gatt.services) {
                     for (ch in svc.characteristics) {
                         if (ch.uuid == CHAR_UUID) notifyChar = ch
-                        if (ch.uuid == RX_CHAR_UUID) rxChar = ch
                     }
                 }
 
@@ -398,7 +403,9 @@ fun CerberusBenchApp(
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     gatt.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
                 } else {
+                    @Suppress("DEPRECATION")
                     cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                    @Suppress("DEPRECATION")
                     gatt.writeDescriptor(cccd)
                 }
                 log("CCCD write initiated")
@@ -409,6 +416,7 @@ fun CerberusBenchApp(
                 gatt: BluetoothGatt,
                 characteristic: BluetoothGattCharacteristic
             ) {
+                @Suppress("DEPRECATION")
                 val bytes = characteristic.value ?: return
                 handleIncoming(bytes, ::log)
             }
@@ -487,46 +495,48 @@ fun CerberusBenchApp(
         Spacer(Modifier.height(16.dp))
 
         // --- Scan Results ---
-        Text("Devices", style = MaterialTheme.typography.titleMedium)
-        val sorted = hits.values
-            .sortedWith(compareByDescending<ScanHit> { it.rssi }.thenBy { it.name ?: "" })
+        Text("Scan Results", style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(8.dp))
 
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = 200.dp), // Use heightIn to be more flexible
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            if (hits.isEmpty() && scanning) {
-                item { Text("Scanning...", style = MaterialTheme.typography.bodySmall, color = Color.Gray) }
-            }
-            items(sorted, key = { it.address }) { d ->
-                val name = d.name ?: "(no name)"
-                val isCerb = name.contains(TARGET_NAME_SUBSTR, ignoreCase = true)
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { if (!scanning) connectTo(d.address) },
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (isCerb) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
-                    )
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(name, style = MaterialTheme.typography.bodyLarge)
-                            Text(d.address, style = MaterialTheme.typography.bodySmall)
-                        }
-                        Text("${d.rssi} dBm", style = MaterialTheme.typography.bodyMedium)
-                    }
+        val cerberusDevice by remember {
+            derivedStateOf {
+                hits.values.firstOrNull {
+                    it.name?.contains(TARGET_NAME_SUBSTR, ignoreCase = true) == true
                 }
             }
         }
 
-        Divider(modifier = Modifier.padding(vertical = 12.dp))
+        if (cerberusDevice != null) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { if (!scanning) cerberusDevice?.let { connectTo(it.address) } },
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer
+                )
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(cerberusDevice!!.name!!, style = MaterialTheme.typography.bodyLarge)
+                        Text(cerberusDevice!!.address, style = MaterialTheme.typography.bodySmall)
+                    }
+                    Text("${cerberusDevice!!.rssi} dBm", style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        } else if (scanning) {
+            Text("Searching for Cerberus...", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        Text("Total devices found: ${hits.size}", style = MaterialTheme.typography.bodySmall)
+
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
 
         // --- Log Output ---
         Text("Log", style = MaterialTheme.typography.titleMedium)
@@ -569,11 +579,4 @@ fun requiredPermissions(): Array<String> {
 fun handleIncoming(bytes: ByteArray, log: (String) -> Unit) {
     // TODO: Implement your data handling logic here
     log("RX: ${bytes.joinToString(" ") { "%02X".format(it) }}")
-}
-
-@Composable
-private fun rememberRequiredPermissions(): Array<String> {
-    return remember {
-        requiredPermissions()
-    }
 }
