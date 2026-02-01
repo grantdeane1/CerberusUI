@@ -3,28 +3,37 @@ package com.twosg.cerberusdisplay
 import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.*
-import android.bluetooth.le.*
+import android.bluetooth.le.BluetoothLeScanner
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.os.ParcelUuid
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.annotation.RequiresApi
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
+import coil.ImageLoader
+import coil.compose.AsyncImage
+import coil.decode.GifDecoder
+import java.util.*
 
 // --- Matches your Windows client constants ---
 private const val TARGET_NAME_SUBSTR = "Cerberus"
@@ -39,6 +48,127 @@ data class ScanHit(
     val rssi: Int,
     val lastSeenMs: Long
 )
+
+// --- UI Elements from new file ---
+
+@Composable
+fun CerberusGif(
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+
+    val imageLoader = remember {
+        ImageLoader.Builder(context)
+            .components {
+                add(GifDecoder.Factory())
+            }
+            .build()
+    }
+
+    AsyncImage(
+        model = R.drawable.cerberus,
+        imageLoader = imageLoader,
+        contentDescription = "Cerberus",
+        modifier = modifier
+    )
+}
+
+enum class DotStarAnim {
+    SOLID,
+    BREATHING,
+    FLASH,
+    URGENT
+}
+
+enum class DotStarMode(
+    val label: String,
+    val color: Color,
+    val animation: DotStarAnim,
+    val brightness: Float
+) {
+    GREEN_SOLID_DIM(
+        "Idle",
+        Color(0xFF00C853),
+        DotStarAnim.SOLID,
+        0.4f
+    ),
+    GREEN_BREATHING_DIM(
+        "Connected",
+        Color(0xFF00C853),
+        DotStarAnim.BREATHING,
+        0.4f
+    ),
+    AMBER_SOLID_DIM(
+        "Connecting",
+        Color(0xFFFFAB00),
+        DotStarAnim.SOLID,
+        0.4f
+    ),
+    BLUE_BT_FLASH_DIM(
+        "Scanning",
+        Color(0xFF2979FF),
+        DotStarAnim.FLASH,
+        0.4f
+    ),
+    RED_URGENT_BRIGHT(
+        "Error",
+        Color(0xFFD50000),
+        DotStarAnim.URGENT,
+        1.0f
+    )
+}
+
+@Composable
+fun DotStarIndicator(
+    mode: DotStarMode,
+    sizeDp: Dp = 64.dp
+) {
+    val infinite = rememberInfiniteTransition(label = "dotstar")
+
+    val alpha = when (mode.animation) {
+        DotStarAnim.SOLID -> mode.brightness
+
+        DotStarAnim.BREATHING -> infinite.animateFloat(
+            initialValue = 0.2f * mode.brightness,
+            targetValue = mode.brightness,
+            animationSpec = infiniteRepeatable(
+                animation = tween(1800, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "breathing"
+        ).value
+
+        DotStarAnim.FLASH -> infinite.animateFloat(
+            initialValue = 0f,
+            targetValue = mode.brightness,
+            animationSpec = infiniteRepeatable(
+                animation = tween(250),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "flash"
+        ).value
+
+        DotStarAnim.URGENT -> infinite.animateFloat(
+            initialValue = 0f,
+            targetValue = mode.brightness,
+            animationSpec = infiniteRepeatable(
+                animation = tween(120),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "urgent"
+        ).value
+    }
+
+    Box(
+        modifier = Modifier
+            .size(sizeDp)
+            .background(
+                color = mode.color.copy(alpha = alpha),
+                shape = CircleShape
+            )
+    )
+}
+
 
 class MainActivity : ComponentActivity() {
 
@@ -74,11 +204,11 @@ fun CerberusBenchApp(
     var scanning by remember { mutableStateOf(false) }
     var connectedAddr by remember { mutableStateOf<String?>(null) }
     var status by remember { mutableStateOf("Idle") }
-    val logLines = remember { mutableStateListOf<String>() }
+    val logLines = remember { mutableStateListOf("App started") }
 
     fun log(msg: String) {
-        // keep last ~300 lines
-        if (logLines.size > 300) logLines.removeAt(0)
+        // keep last ~100 lines
+        if (logLines.size > 100) logLines.removeAt(0)
         logLines.add(msg)
     }
 
@@ -117,10 +247,8 @@ fun CerberusBenchApp(
                     if (hasConnectPerm) dev.name ?: result.scanRecord?.deviceName
                     else result.scanRecord?.deviceName
                 } else {
-                    // Pre-Android 12: dev.name is not gated by BLUETOOTH_CONNECT
                     dev.name ?: result.scanRecord?.deviceName
                 }
-                // Keep everything, but we’ll highlight Cerberus in UI via name substring
                 hits[addr] = ScanHit(
                     address = addr,
                     name = name,
@@ -141,7 +269,7 @@ fun CerberusBenchApp(
     fun startScan() {
         val adapter = btAdapterProvider()
         if (!adapter.isEnabled) {
-            status = "Bluetooth OFF (adapter reports disabled)"
+            status = "Bluetooth OFF"
             log(status)
             return
         }
@@ -159,8 +287,6 @@ fun CerberusBenchApp(
         }
 
         hits.clear()
-
-        // Basic scan: no filters (robust), keep it simple for testbench
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
@@ -179,7 +305,6 @@ fun CerberusBenchApp(
         log(status)
     }
 
-    // --- GATT connection manager (minimal, testbench-grade) ---
     val gattHolder = remember { mutableStateOf<BluetoothGatt?>(null) }
 
     @SuppressLint("MissingPermission")
@@ -198,7 +323,7 @@ fun CerberusBenchApp(
     @SuppressLint("MissingPermission")
     fun connectTo(address: String) {
         if (!hasAllPerms()) {
-            status = "Missing permissions; cannot connect."
+            status = "Missing permissions"
             log(status)
             return
         }
@@ -223,6 +348,7 @@ fun CerberusBenchApp(
                     gatt.discoverServices()
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                     log("GATT disconnected.")
+                    status = "Disconnected"
                     runCatching { gatt.close() }
                     gattHolder.value = null
                     connectedAddr = null
@@ -234,11 +360,11 @@ fun CerberusBenchApp(
             override fun onServicesDiscovered(gatt: BluetoothGatt, statusCode: Int) {
                 if (statusCode != BluetoothGatt.GATT_SUCCESS) {
                     log("Service discovery failed: $statusCode")
+                    status = "Service discovery failed"
                     return
                 }
                 log("Services discovered. Locating notify characteristic…")
 
-                // Find characteristics by UUID across all services.
                 var notifyChar: BluetoothGattCharacteristic? = null
                 var rxChar: BluetoothGattCharacteristic? = null
 
@@ -251,36 +377,34 @@ fun CerberusBenchApp(
 
                 if (notifyChar == null) {
                     log("ERROR: Notify characteristic not found: $CHAR_UUID")
+                    status = "Notify char not found"
                     return
                 }
                 log("Found notify characteristic. Enabling notifications…")
 
-                // Enable local notification
                 val okLocal = gatt.setCharacteristicNotification(notifyChar, true)
                 if (!okLocal) {
                     log("ERROR: setCharacteristicNotification returned false")
+                    status = "Notify setup failed (local)"
                     return
                 }
 
-                // Enable CCCD on the peripheral
                 val cccd = notifyChar.getDescriptor(CCCD_UUID)
                 if (cccd == null) {
                     log("ERROR: CCCD descriptor missing on notify characteristic")
+                    status = "CCCD descriptor missing"
                     return
                 }
-                cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                val okDesc = gatt.writeDescriptor(cccd)
-                log("CCCD write initiated: $okDesc")
-
-                // (Optional later) Keep rxChar for writes; for now we just listen.
-                if (rxChar != null) {
-                    log("Found RX characteristic (write) too.")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    gatt.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
                 } else {
-                    log("RX characteristic not found (ok for testbench).")
+                    cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                    gatt.writeDescriptor(cccd)
                 }
+                log("CCCD write initiated")
             }
 
-            @Deprecated("Deprecated in API 33, but still works for our target")
+            @Deprecated("Deprecated in API 33")
             override fun onCharacteristicChanged(
                 gatt: BluetoothGatt,
                 characteristic: BluetoothGattCharacteristic
@@ -289,7 +413,6 @@ fun CerberusBenchApp(
                 handleIncoming(bytes, ::log)
             }
 
-            // Android 13+ callback (safe to include)
             override fun onCharacteristicChanged(
                 gatt: BluetoothGatt,
                 characteristic: BluetoothGattCharacteristic,
@@ -308,12 +431,12 @@ fun CerberusBenchApp(
                     status = "Connected + Notifying"
                     log(status)
                 } else {
+                    status = "CCCD write failed"
                     log("ERROR: CCCD write failed")
                 }
             }
         }
 
-        // TRANSPORT_LE helps some devices behave.
         val gatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             dev.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
         } else {
@@ -323,123 +446,134 @@ fun CerberusBenchApp(
     }
 
     // --- UI ---
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        Text("Cerberus BLE Testbench", style = MaterialTheme.typography.titleLarge)
-        Spacer(Modifier.height(6.dp))
-        Text("Status: $status")
+    val currentDotStarMode = when {
+        status.contains("fail", ignoreCase = true) || status.contains("error", ignoreCase = true) -> DotStarMode.RED_URGENT_BRIGHT
+        status.startsWith("Connecting") -> DotStarMode.AMBER_SOLID_DIM
+        status.startsWith("Scanning") -> DotStarMode.BLUE_BT_FLASH_DIM
+        status.startsWith("Connected") -> DotStarMode.GREEN_BREATHING_DIM
+        else -> DotStarMode.GREEN_SOLID_DIM
+    }
 
-        Spacer(Modifier.height(12.dp))
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+    ) {
 
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        // --- Status Header ---
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            CerberusGif(modifier = Modifier.height(100.dp))
+            Spacer(Modifier.height(12.dp))
+            DotStarIndicator(currentDotStarMode)
+            Spacer(Modifier.height(8.dp))
+            Text(status, style = MaterialTheme.typography.bodyMedium)
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // --- Controls ---
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally)
+        ) {
             Button(onClick = { startScan() }, enabled = !scanning) { Text("Scan") }
             OutlinedButton(onClick = { stopScan() }, enabled = scanning) { Text("Stop") }
-            OutlinedButton(onClick = { permissionLauncher.launch(requiredPerms) }) { Text("Perms") }
             OutlinedButton(onClick = { disconnect() }, enabled = connectedAddr != null) { Text("Disconnect") }
         }
 
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(16.dp))
 
+        // --- Scan Results ---
+        Text("Devices", style = MaterialTheme.typography.titleMedium)
         val sorted = hits.values
             .sortedWith(compareByDescending<ScanHit> { it.rssi }.thenBy { it.name ?: "" })
 
-        Text("Tap a device to connect. (We’ll prefer name contains \"$TARGET_NAME_SUBSTR\".)")
-
-        Spacer(Modifier.height(8.dp))
-
-        // Devices list
         LazyColumn(
-            modifier = Modifier.height(220.dp).fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 200.dp), // Use heightIn to be more flexible
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            items(sorted) { d ->
+            if (hits.isEmpty() && scanning) {
+                item { Text("Scanning...", style = MaterialTheme.typography.bodySmall, color = Color.Gray) }
+            }
+            items(sorted, key = { it.address }) { d ->
                 val name = d.name ?: "(no name)"
                 val isCerb = name.contains(TARGET_NAME_SUBSTR, ignoreCase = true)
-                val isConnected = (connectedAddr == d.address)
-
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable {
-                            // If user taps something non-Cerberus, still connect; it’s a bench.
-                            connectTo(d.address)
-                        }
+                        .clickable { if (!scanning) connectTo(d.address) },
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (isCerb) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+                    )
                 ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Text(
-                            text = (if (isCerb) "🟢 " else "") + name + (if (isConnected) "  [CONNECTED]" else ""),
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                        Text(d.address)
-                        Text("RSSI: ${d.rssi} dBm")
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(name, style = MaterialTheme.typography.bodyLarge)
+                            Text(d.address, style = MaterialTheme.typography.bodySmall)
+                        }
+                        Text("${d.rssi} dBm", style = MaterialTheme.typography.bodyMedium)
                     }
                 }
             }
         }
 
-        Spacer(Modifier.height(12.dp))
-        Text("Incoming packets:")
-        Spacer(Modifier.height(6.dp))
+        Divider(modifier = Modifier.padding(vertical = 12.dp))
 
-        // Log view (simple)
-
-        val lastLines = logLines.takeLast(20)
-
+        // --- Log Output ---
+        Text("Log", style = MaterialTheme.typography.titleMedium)
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            reverseLayout = true
+            reverseLayout = true, // Show latest logs at the bottom
+            verticalArrangement = Arrangement.Bottom
         ) {
-            items(lastLines.asReversed()) { line ->
-                Text(line, style = MaterialTheme.typography.bodySmall)
-                Spacer(Modifier.height(2.dp))
+            items(logLines.asReversed()) { line ->
+                Text(
+                    text = line,
+                    style = MaterialTheme.typography.bodySmall,
+                    softWrap = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
         }
-
-
     }
 }
 
-// --- Packet handling that matches your Python client logic ---
-private fun handleIncoming(bytes: ByteArray, log: (String) -> Unit) {
-    val ts = System.currentTimeMillis()
-    val hex = bytes.joinToString(" ") { b -> "%02X".format(b.toInt() and 0xFF) }
-    log("$ts  len=${bytes.size}  $hex")
 
-    if (bytes.size != 20) return
+// --- Helper Functions ---
 
-    val b0 = bytes[0].toInt() and 0xFF
-
-    // ACK packets: high bit set in first byte, matches your Python convention. :contentReference[oaicite:4]{index=4}
-    if ((b0 and 0x80) != 0) {
-        val cmd = b0 and 0x7F
-        val status = bytes[1].toInt() and 0xFF
-        log("  ACK: cmd=0x%02X status=0x%02X".format(cmd, status))
-        return
-    }
-
-    // Status packet (packet_id==0) is used in your client. :contentReference[oaicite:5]{index=5}
-    if (b0 == 0x00) {
-        val status0 = bytes[1].toInt() and 0xFF
-        val status1 = bytes[2].toInt() and 0xFF
-        val mv = ((bytes[4].toInt() and 0xFF) shl 8) or (bytes[3].toInt() and 0xFF)
-        val volts = mv / 1000.0
-        log("  STATUS: v=%.3fV  status0=0x%02X status1=0x%02X".format(volts, status0, status1))
-    }
-}
-
-/**
- * Android 12+: BLUETOOTH_SCAN/CONNECT.
- * Pre-12: location permission needed for scan results on many devices.
- */
-private fun requiredPermissions(): Array<String> {
+fun requiredPermissions(): Array<String> {
     return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         arrayOf(
             Manifest.permission.BLUETOOTH_SCAN,
             Manifest.permission.BLUETOOTH_CONNECT,
-            Manifest.permission.ACCESS_FINE_LOCATION
+            Manifest.permission.ACCESS_FINE_LOCATION // Still needed for companion devices
         )
     } else {
         arrayOf(
+            Manifest.permission.BLUETOOTH,
+            Manifest.permission.BLUETOOTH_ADMIN,
             Manifest.permission.ACCESS_FINE_LOCATION
         )
+    }
+}
+
+fun handleIncoming(bytes: ByteArray, log: (String) -> Unit) {
+    // TODO: Implement your data handling logic here
+    log("RX: ${bytes.joinToString(" ") { "%02X".format(it) }}")
+}
+
+@Composable
+private fun rememberRequiredPermissions(): Array<String> {
+    return remember {
+        requiredPermissions()
     }
 }
