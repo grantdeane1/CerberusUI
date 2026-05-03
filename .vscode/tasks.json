@@ -1,0 +1,146 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Android: Clean",
+      "type": "shell",
+      "command": ".\\gradlew.bat",
+      "args": ["clean"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "JAVA_HOME": "C:\\Program Files\\Android\\Android Studio\\jbr",
+              "PATH": "C:\\Users\\deane\\AppData\\Local\\Android\\Sdk\\platform-tools;C:\\Program Files\\Android\\Android Studio\\jbr\\bin;${env:PATH}"
+        }
+      },
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Android: Assemble Debug",
+      "type": "shell",
+      "command": ".\\gradlew.bat",
+      "args": ["assembleDebug"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "JAVA_HOME": "C:\\Program Files\\Android\\Android Studio\\jbr",
+              "PATH": "C:\\Users\\deane\\AppData\\Local\\Android\\Sdk\\platform-tools;C:\\Program Files\\Android\\Android Studio\\jbr\\bin;${env:PATH}"
+        }
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Android: Install Debug",
+      "type": "shell",
+      "command": ".\\gradlew.bat",
+      "args": ["installDebug"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "JAVA_HOME": "C:\\Program Files\\Android\\Android Studio\\jbr",
+              "PATH": "C:\\Users\\deane\\AppData\\Local\\Android\\Sdk\\platform-tools;C:\\Program Files\\Android\\Android Studio\\jbr\\bin;${env:PATH}"
+        }
+      },
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Android: Build + Install Debug",
+      "type": "shell",
+      "command": ".\\gradlew.bat",
+      "args": ["installDebug"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "JAVA_HOME": "C:\\Program Files\\Android\\Android Studio\\jbr",
+              "PATH": "C:\\Users\\deane\\AppData\\Local\\Android\\Sdk\\platform-tools;C:\\Program Files\\Android\\Android Studio\\jbr\\bin;${env:PATH}"
+        }
+      },
+      "dependsOn": [
+        "Android: Assemble Debug"
+      ],
+      "dependsOrder": "sequence",
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Android: Launch App",
+      "type": "shell",
+      "command": "adb",
+      "args": [
+        "shell",
+        "am",
+        "start",
+        "-n",
+        "com.twosg.cerberusdisplay/.MainActivity"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "JAVA_HOME": "C:\\Program Files\\Android\\Android Studio\\jbr",
+              "PATH": "C:\\Users\\deane\\AppData\\Local\\Android\\Sdk\\platform-tools;C:\\Program Files\\Android\\Android Studio\\jbr\\bin;${env:PATH}"
+        }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Android: Build + Install + Launch",
+      "type": "shell",
+      "command": "adb",
+      "args": [
+        "shell",
+        "am",
+        "start",
+        "-n",
+        "com.twosg.cerberusdisplay/.MainActivity"
+      ],
+      "dependsOn": [
+        "Android: Build + Install Debug"
+      ],
+      "dependsOrder": "sequence",
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Android: List Devices",
+      "type": "shell",
+      "command": "adb",
+      "args": ["devices"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "JAVA_HOME": "C:\\Program Files\\Android\\Android Studio\\jbr",
+              "PATH": "C:\\Users\\deane\\AppData\\Local\\Android\\Sdk\\platform-tools;C:\\Program Files\\Android\\Android Studio\\jbr\\bin;${env:PATH}"
+        }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Android: Logcat (Cerberus)",
+      "type": "shell",
+      "command": "adb",
+      "args": [
+        "logcat",
+        "-s",
+        "cerberusdisplay",
+        "BluetoothGatt",
+        "BluetoothLeScanner",
+        "AndroidRuntime"
+      ],
+      "isBackground": true,
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "JAVA_HOME": "C:\\Program Files\\Android\\Android Studio\\jbr",
+              "PATH": "C:\\Users\\deane\\AppData\\Local\\Android\\Sdk\\platform-tools;C:\\Program Files\\Android\\Android Studio\\jbr\\bin;${env:PATH}"
+        }
+      },
+      "problemMatcher": []
+    }
+  ]
+}
