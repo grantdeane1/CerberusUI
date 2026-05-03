@@ -17,6 +17,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -33,6 +34,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -48,6 +50,13 @@ import java.util.*
 //region --- Top-Level Constants ---
 
 private const val TARGET_NAME_SUBSTR = "Cerberus"
+
+object AlertConfig {
+    const val FLOW_ALERT_PERIOD_MS = 500
+    const val FLOW_ALERT_ON_MS = 165
+    val FLOW_ALERT_COLOR = Color(0xFFD50000)
+    const val ALARM_SNOOZE_MS = 120_000   // 2 minutes; adjust for clinical preference
+}
 private val CHAR_UUID: UUID = UUID.fromString("abcd1234-ab12-cd34-ef56-abcdef123456")
 private val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
@@ -210,6 +219,36 @@ fun DotStarIndicator(mode: DotStarMode, sizeDp: Dp = 64.dp) {
 }
 
 @Composable
+fun FlowAlertTriangle(sizeDp: Dp = 220.dp) {
+    val infinite = rememberInfiniteTransition(label = "flowAlert")
+    val alpha by infinite.animateFloat(
+        initialValue = 1f,
+        targetValue = 0f,
+        animationSpec = infiniteRepeatable(
+            animation = keyframes {
+                durationMillis = AlertConfig.FLOW_ALERT_PERIOD_MS
+                1f at 0
+                1f at AlertConfig.FLOW_ALERT_ON_MS
+                0f at AlertConfig.FLOW_ALERT_ON_MS + 1
+                0f at AlertConfig.FLOW_ALERT_PERIOD_MS - 1
+            },
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "triangleAlpha"
+    )
+    Canvas(modifier = Modifier.size(sizeDp)) {
+        val path = Path()
+        val w = size.width
+        val h = size.height
+        path.moveTo(w / 2f, 0f)
+        path.lineTo(w, h)
+        path.lineTo(0f, h)
+        path.close()
+        drawPath(path = path, color = AlertConfig.FLOW_ALERT_COLOR.copy(alpha = alpha))
+    }
+}
+
+@Composable
 private fun StatusItem(label: String, value: String, isWarning: Boolean = false) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -284,6 +323,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val btManager = getSystemService(BLUETOOTH_SERVICE) as BluetoothManager
         btAdapter = btManager.adapter
         bleScanner = btAdapter.bluetoothLeScanner
@@ -313,6 +353,8 @@ fun CerberusBenchApp(
     val logLines = remember { mutableStateListOf("App started") }
     val eventChannel = remember { Channel<BleEvent>(Channel.UNLIMITED) }
     var fileToSave by remember { mutableStateOf<File?>(null) }
+    val alarmController = remember { AlarmController(context) }
+    DisposableEffect(Unit) { onDispose { alarmController.release() } }
 
     fun log(msg: String) {
         if (logLines.size > 100) logLines.removeAt(0)
@@ -419,6 +461,7 @@ fun CerberusBenchApp(
                         BluetoothProfile.STATE_CONNECTED -> { log("GATT connected. Discovering services…"); event.gatt.discoverServices() }
                         BluetoothProfile.STATE_DISCONNECTED -> {
                             log("GATT disconnected."); event.gatt.close()
+                            alarmController.stopAlarm()
                             uiState = CerberusUiState.Disconnected(sessionLogs = getFilesInCache(context))
                         }
                     }
@@ -484,6 +527,8 @@ fun CerberusBenchApp(
                                 var newDotStarMode = DotStarMode.GREEN_BREATHING_DIM
                                 if (status.isBatteryLow) { newLastError = "Battery Low"; newDotStarMode = DotStarMode.RED_URGENT_BRIGHT }
                                 if (status.isTempOutOfRange) { newLastError = "Temperature Out of Range"; newDotStarMode = DotStarMode.RED_URGENT_BRIGHT }
+                                if (status.sensorMode != SensorMode.Normal) alarmController.startAlarm()
+                                else alarmController.stopAlarm()
                                 currentState.activeLogFile?.let { f ->
                                     val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
                                     if (!writeToLog(f, "$ts,$hexString,${status.sensorMode},${status.isBatteryLow},${status.isBleDisconnected},${status.sensorHealth},${status.isTempOutOfRange},${status.cerberusMode},${status.voltageMv}")) log("ERROR: Failed to write to log file.")
@@ -495,6 +540,7 @@ fun CerberusBenchApp(
                                     val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
                                     if (!writeToLog(f, "$ts,$hexString,ERROR: ${parseResult.message},,,,,")) log("ERROR: Failed to write to log file.")
                                 }
+                                alarmController.stopAlarm()
                                 uiState = currentState.copy(rawPacket = hexString, lastError = parseResult.message, dotStarMode = DotStarMode.RED_URGENT_BRIGHT, status = null)
                             }
                         }
@@ -584,7 +630,13 @@ fun CerberusBenchApp(
                 if (state.showDetailsScreen)
                     DisplayScreen(state = state, onReturn = { uiState = (uiState as CerberusUiState.Connected).copy(showDetailsScreen = false) })
                 else
-                    DashboardScreen(state = state, onDisconnect = { disconnect() }, onShowDetails = { uiState = (uiState as CerberusUiState.Connected).copy(showDetailsScreen = true) })
+                    DashboardScreen(
+                        state = state,
+                        isAlarmSnoozed = alarmController.isSnoozed,
+                        onDisconnect = { disconnect() },
+                        onShowDetails = { uiState = (uiState as CerberusUiState.Connected).copy(showDetailsScreen = true) },
+                        onSilenceAlarm = { alarmController.snooze() }
+                    )
             }
             is CerberusUiState.LogManager -> LogManagerScreen(
                 state = state,
@@ -656,7 +708,7 @@ fun LogManagerScreen(state: CerberusUiState.LogManager, onSaveLog: (File) -> Uni
 
 @Composable
 fun ScanningScreen(state: CerberusUiState.Scanning, onStopScan: () -> Unit, onConnectToDevice: (ScanHit) -> Unit) {
-    val (cerberusHits, otherHits) = state.hits.partition { it.name?.contains(TARGET_NAME_SUBSTR, ignoreCase = true) == true }
+    val cerberusHits = state.hits.filter { it.name?.contains(TARGET_NAME_SUBSTR, ignoreCase = true) == true }
     Column(modifier = Modifier.fillMaxSize().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Scanning...", style = MaterialTheme.typography.titleLarge)
@@ -678,17 +730,6 @@ fun ScanningScreen(state: CerberusUiState.Scanning, onStopScan: () -> Unit, onCo
                     }
                 }
             }
-            if (otherHits.isNotEmpty()) {
-                item { Text("Other Devices", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 24.dp, bottom = 8.dp)) }
-                items(otherHits) { hit ->
-                    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable { onConnectToDevice(hit) }, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
-                        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                            Column(modifier = Modifier.weight(1f)) { Text(hit.name ?: "Unknown", style = MaterialTheme.typography.bodyMedium); Text(hit.address, style = MaterialTheme.typography.bodySmall) }
-                            Text("${hit.rssi} dBm")
-                        }
-                    }
-                }
-            }
         }
     }
 }
@@ -704,7 +745,13 @@ fun ConnectingScreen(state: CerberusUiState.Connecting) {
 
 @SuppressLint("MissingPermission")
 @Composable
-fun DashboardScreen(state: CerberusUiState.Connected, onDisconnect: () -> Unit, onShowDetails: () -> Unit) {
+fun DashboardScreen(
+    state: CerberusUiState.Connected,
+    isAlarmSnoozed: Boolean,
+    onDisconnect: () -> Unit,
+    onShowDetails: () -> Unit,
+    onSilenceAlarm: () -> Unit
+) {
     LaunchedEffect(state.device.address) {
         while (true) { state.gatt.readRemoteRssi(); delay(3000) }
     }
@@ -721,9 +768,37 @@ fun DashboardScreen(state: CerberusUiState.Connected, onDisconnect: () -> Unit, 
             IconButton(onClick = onShowDetails) { Icon(Icons.Outlined.Info, contentDescription = "Show Details", modifier = Modifier.size(48.dp)) }
         }
         Spacer(modifier = Modifier.height(60.dp))
-        DotStarIndicator(mode = state.dotStarMode, sizeDp = 220.dp)
+        val status = state.status
+        val isFlowAlert = status != null && status.sensorMode != SensorMode.Normal
+        when {
+            status == null -> {
+                Text(text = "Initializing", style = MaterialTheme.typography.headlineMedium, color = Color.Gray)
+            }
+            isFlowAlert -> {
+                FlowAlertTriangle(sizeDp = 220.dp)
+            }
+            else -> {
+                DotStarIndicator(mode = state.dotStarMode, sizeDp = 220.dp)
+            }
+        }
         Spacer(modifier = Modifier.height(16.dp))
-        state.status?.let { Text(text = it.sensorMode.name, style = MaterialTheme.typography.titleLarge) }
+        status?.let {
+            Text(
+                text = it.sensorMode.name,
+                style = MaterialTheme.typography.titleLarge,
+                color = if (it.sensorMode != SensorMode.Normal) AlertConfig.FLOW_ALERT_COLOR else Color.Unspecified
+            )
+        }
+        if (isFlowAlert) {
+            Spacer(modifier = Modifier.height(24.dp))
+            Button(
+                onClick = onSilenceAlarm,
+                enabled = !isAlarmSnoozed,
+                colors = ButtonDefaults.buttonColors(containerColor = AlertConfig.FLOW_ALERT_COLOR)
+            ) {
+                Text(if (isAlarmSnoozed) "Alarm Silenced (auto-resumes)" else "Silence Alarm")
+            }
+        }
         Spacer(modifier = Modifier.weight(1f))
         OutlinedButton(onClick = onDisconnect) { Text("Stop & Disconnect") }
     }
