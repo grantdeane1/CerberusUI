@@ -145,6 +145,7 @@ sealed class CerberusUiState {
     data class Connecting(val device: ScanHit) : CerberusUiState()
     data class Connected(
         val device: BluetoothDevice,
+        val nickname: String = "Unknown",
         val gatt: BluetoothGatt,
         val rssi: Int,
         val lastError: String? = null,
@@ -501,13 +502,15 @@ fun CerberusBenchApp(
                     log("CCCD write complete: status=${event.status}")
                     if (event.status == BluetoothGatt.GATT_SUCCESS) {
                         log("Connection complete. Initializing automatic logging.")
-                        val rssi = (uiState as? CerberusUiState.Connecting)?.device?.rssi ?: 0
+                        val connectingHit = uiState as? CerberusUiState.Connecting
+                        val rssi = connectingHit?.device?.rssi ?: 0
+                        val nickname = connectingHit?.device?.name?.takeIf { it.isNotBlank() } ?: "Unknown"
                         val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
                         val unitId = event.gatt.device.address.replace(":", "").takeLast(6)
                         val logFile = File(context.cacheDir, "Cerberus-$unitId-$timestamp.txt")
                         val header = "Timestamp,RawPacket,SensorMode,IsBatteryLow,IsBleDisconnected,SensorHealth,IsTempOutOfRange,CerberusMode,VoltageMv"
                         if (!writeToLog(logFile, header)) log("ERROR: Failed to write log header.") else log("Logging to internal file: ${logFile.name}")
-                        uiState = CerberusUiState.Connected(device = event.gatt.device, gatt = event.gatt, rssi = rssi, rawPacket = "Connection successful, waiting for data...", activeLogFile = logFile)
+                        uiState = CerberusUiState.Connected(device = event.gatt.device, nickname = nickname, gatt = event.gatt, rssi = rssi, rawPacket = "Connection successful, waiting for data...", activeLogFile = logFile)
                     } else {
                         log("ERROR: CCCD write failed")
                         uiState = CerberusUiState.Disconnected(lastErrorMessage = "CCCD write failed", sessionLogs = getFilesInCache(context))
@@ -720,7 +723,7 @@ fun ScanningScreen(state: CerberusUiState.Scanning, onStopScan: () -> Unit, onCo
         Spacer(modifier = Modifier.height(16.dp))
         LazyColumn(modifier = Modifier.fillMaxWidth()) {
             if (cerberusHits.isNotEmpty()) {
-                item { Text("Cerberus Devices", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(vertical = 8.dp)) }
+                item { Text("Devices", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(vertical = 8.dp)) }
                 items(cerberusHits) { hit ->
                     Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable { onConnectToDevice(hit) }, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
                         Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
@@ -759,7 +762,7 @@ fun DashboardScreen(
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
             Column {
                 Text(text = "Cerberus", style = MaterialTheme.typography.headlineSmall)
-                Text(text = "Unit ID: ${state.device.address.replace(":", "").takeLast(6)}", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
+                Text(text = "Nickname: ${state.nickname}", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
                 state.status?.let {
                     Text(text = "Battery: ${if (it.isBatteryLow) "Low" else "OK"}", style = MaterialTheme.typography.bodyMedium, color = if (it.isBatteryLow) MaterialTheme.colorScheme.error else Color.Gray)
                     Icon(imageVector = Icons.Default.Bluetooth, contentDescription = "Bluetooth Connected", tint = Color.Blue, modifier = Modifier.size(36.dp))
