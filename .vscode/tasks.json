@@ -77,7 +77,7 @@
         "am",
         "start",
         "-n",
-        "com.twosg.cerberusdisplay/.MainActivity"
+        "com.twosg.cerberusdisplay.nrf5/.MainActivity"
       ],
       "options": {
         "cwd": "${workspaceFolder}",
@@ -97,7 +97,7 @@
         "am",
         "start",
         "-n",
-        "com.twosg.cerberusdisplay/.MainActivity"
+        "com.twosg.cerberusdisplay.nrf5/.MainActivity"
       ],
       "dependsOn": [
         "Android: Build + Install Debug"

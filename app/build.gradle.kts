@@ -10,7 +10,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.twosg.cerberusdisplay"
+        applicationId = "com.twosg.cerberusdisplay.nrf5"
         minSdk = 26
         targetSdk = 36
         versionCode = 1

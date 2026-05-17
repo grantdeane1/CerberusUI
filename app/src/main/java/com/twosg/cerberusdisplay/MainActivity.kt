@@ -13,6 +13,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -23,7 +24,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.outlined.Delete
@@ -103,11 +106,25 @@ enum class SensorMode {
 }
 
 enum class SensorHealth {
-    Therm1Bad, Therm2Bad, Therm3Bad, Therm4Bad, Therm5Bad, Therm6Bad, HeaterBad, AllOK;
+    AllOK,
+    AdcFault,
+    HeaterFault,
+    Reserved3,
+    Reserved4,
+    Reserved5,
+    Reserved6,
+    Reserved7;
     companion object {
         fun from(value: Int) = when (value) {
-            0 -> Therm1Bad; 1 -> Therm2Bad; 2 -> Therm3Bad; 3 -> Therm4Bad
-            4 -> Therm5Bad; 5 -> Therm6Bad; 6 -> HeaterBad; 7 -> AllOK; else -> AllOK
+            0 -> AllOK
+            1 -> AdcFault
+            2 -> HeaterFault
+            3 -> Reserved3
+            4 -> Reserved4
+            5 -> Reserved5
+            6 -> Reserved6
+            7 -> Reserved7
+            else -> Reserved7
         }
     }
 }
@@ -128,7 +145,12 @@ data class CerberusStatus(
     val sensorHealth: SensorHealth,
     val isTempOutOfRange: Boolean,
     val cerberusMode: CerberusMode,
-    val voltageMv: Int
+    val voltageMv: Int,
+    val readinessFlags: Int,
+    val isTrinketUartFault: Boolean,
+    val isTrinketFwMismatch: Boolean,
+    val isAdsFault: Boolean,
+    val isHardFailActive: Boolean
 )
 
 sealed class ParseResult {
@@ -283,6 +305,11 @@ fun CerberusStatusCard(status: CerberusStatus) {
             StatusItem("Sensor Mode", status.sensorMode.name)
             StatusItem("Sensor Health", status.sensorHealth.name, isWarning = status.sensorHealth != SensorHealth.AllOK)
             StatusItem("BLE State", if (status.isBleDisconnected) "Disconnected" else "Connected", isWarning = status.isBleDisconnected)
+            StatusItem("Readiness Flags", "0x${status.readinessFlags.toString(16).uppercase().padStart(2, '0')}")
+            StatusItem("Trinket UART", if (status.isTrinketUartFault) "Fault" else "OK", isWarning = status.isTrinketUartFault)
+            StatusItem("Trinket FW", if (status.isTrinketFwMismatch) "Mismatch" else "OK", isWarning = status.isTrinketFwMismatch)
+            StatusItem("ADS", if (status.isAdsFault) "Fault" else "OK", isWarning = status.isAdsFault)
+            StatusItem("Hard Fail", if (status.isHardFailActive) "Active" else "Inactive", isWarning = status.isHardFailActive)
         }
     }
 }
@@ -422,6 +449,7 @@ fun CerberusBenchApp(
         }
         val status0 = bytes[1].toInt() and 0xFF
         val status1 = bytes[2].toInt() and 0xFF
+        val readinessFlags = bytes[5].toInt() and 0xFF
         return ParseResult.Success(
             CerberusStatus(
                 sensorMode = SensorMode.from(status0 and 0x07),
@@ -430,7 +458,12 @@ fun CerberusBenchApp(
                 sensorHealth = SensorHealth.from((status0 shr 5) and 0x07),
                 isTempOutOfRange = status1 and 0x01 == 1,
                 cerberusMode = CerberusMode.from((status1 and 0x0E) shr 1),
-                voltageMv = ((bytes[4].toInt() and 0xFF) shl 8) or (bytes[3].toInt() and 0xFF)
+                voltageMv = ((bytes[4].toInt() and 0xFF) shl 8) or (bytes[3].toInt() and 0xFF),
+                readinessFlags = readinessFlags,
+                isTrinketUartFault = (status1 and 0x10) != 0,
+                isTrinketFwMismatch = (status1 and 0x20) != 0,
+                isAdsFault = (status1 and 0x40) != 0,
+                isHardFailActive = (status1 and 0x80) != 0
             )
         )
     }
@@ -508,7 +541,7 @@ fun CerberusBenchApp(
                         val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
                         val unitId = event.gatt.device.address.replace(":", "").takeLast(6)
                         val logFile = File(context.cacheDir, "Cerberus-$unitId-$timestamp.txt")
-                        val header = "Timestamp,RawPacket,SensorMode,IsBatteryLow,IsBleDisconnected,SensorHealth,IsTempOutOfRange,CerberusMode,VoltageMv"
+                        val header = "Timestamp,RawPacket,SensorMode,IsBatteryLow,IsBleDisconnected,SensorHealth,IsTempOutOfRange,CerberusMode,VoltageMv,ReadinessFlags,IsTrinketUartFault,IsTrinketFwMismatch,IsAdsFault,IsHardFailActive"
                         if (!writeToLog(logFile, header)) log("ERROR: Failed to write log header.") else log("Logging to internal file: ${logFile.name}")
                         uiState = CerberusUiState.Connected(device = event.gatt.device, nickname = nickname, gatt = event.gatt, rssi = rssi, rawPacket = "Connection successful, waiting for data...", activeLogFile = logFile)
                     } else {
@@ -530,18 +563,22 @@ fun CerberusBenchApp(
                                 var newDotStarMode = DotStarMode.GREEN_BREATHING_DIM
                                 if (status.isBatteryLow) { newLastError = "Battery Low"; newDotStarMode = DotStarMode.RED_URGENT_BRIGHT }
                                 if (status.isTempOutOfRange) { newLastError = "Temperature Out of Range"; newDotStarMode = DotStarMode.RED_URGENT_BRIGHT }
+                                if (status.isHardFailActive) { newLastError = "Hard Fail Active"; newDotStarMode = DotStarMode.RED_URGENT_BRIGHT }
+                                else if (status.isAdsFault) { newLastError = "ADS Fault"; newDotStarMode = DotStarMode.RED_URGENT_BRIGHT }
+                                else if (status.isTrinketUartFault) { newLastError = "Trinket UART Fault"; newDotStarMode = DotStarMode.RED_URGENT_BRIGHT }
+                                else if (status.isTrinketFwMismatch) { newLastError = "Trinket FW Mismatch"; newDotStarMode = DotStarMode.RED_URGENT_BRIGHT }
                                 if (status.sensorMode != SensorMode.Normal) alarmController.startAlarm()
                                 else alarmController.stopAlarm()
                                 currentState.activeLogFile?.let { f ->
                                     val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
-                                    if (!writeToLog(f, "$ts,$hexString,${status.sensorMode},${status.isBatteryLow},${status.isBleDisconnected},${status.sensorHealth},${status.isTempOutOfRange},${status.cerberusMode},${status.voltageMv}")) log("ERROR: Failed to write to log file.")
+                                    if (!writeToLog(f, "$ts,$hexString,${status.sensorMode},${status.isBatteryLow},${status.isBleDisconnected},${status.sensorHealth},${status.isTempOutOfRange},${status.cerberusMode},${status.voltageMv},${status.readinessFlags},${status.isTrinketUartFault},${status.isTrinketFwMismatch},${status.isAdsFault},${status.isHardFailActive}")) log("ERROR: Failed to write to log file.")
                                 }
                                 uiState = currentState.copy(rawPacket = hexString, lastError = newLastError, dotStarMode = newDotStarMode, status = status)
                             }
                             is ParseResult.Error -> {
                                 currentState.activeLogFile?.let { f ->
                                     val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
-                                    if (!writeToLog(f, "$ts,$hexString,ERROR: ${parseResult.message},,,,,")) log("ERROR: Failed to write to log file.")
+                                    if (!writeToLog(f, "$ts,$hexString,ERROR: ${parseResult.message},,,,,,,,,,,,")) log("ERROR: Failed to write to log file.")
                                 }
                                 alarmController.stopAlarm()
                                 uiState = currentState.copy(rawPacket = hexString, lastError = parseResult.message, dotStarMode = DotStarMode.RED_URGENT_BRIGHT, status = null)
@@ -550,7 +587,7 @@ fun CerberusBenchApp(
                     } else {
                         currentState.activeLogFile?.let { f ->
                             val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
-                            if (!writeToLog(f, "$ts,$hexString,,,,,,,")) log("ERROR: Failed to write to log file.")
+                            if (!writeToLog(f, "$ts,$hexString,,,,,,,,,,,,")) log("ERROR: Failed to write to log file.")
                         }
                         uiState = currentState.copy(rawPacket = hexString, status = currentState.status, lastError = currentState.lastError)
                     }
@@ -809,15 +846,39 @@ fun DashboardScreen(
 
 @Composable
 fun DisplayScreen(state: CerberusUiState.Connected, onReturn: () -> Unit) {
+    BackHandler(onBack = onReturn)
+
+    val scrollState = rememberScrollState()
     Column(modifier = Modifier.fillMaxSize().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Text("Cerberus Details", style = MaterialTheme.typography.headlineSmall)
-        Spacer(modifier = Modifier.height(16.dp))
-        StatusItem("Signal Strength:", "${state.rssi} dBm")
-        state.activeLogFile?.let { StatusItem("Logging To: ", it.name) }
-        state.rawPacket?.let { Spacer(modifier = Modifier.height(16.dp)); Text(text = "Raw Packet: $it", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(bottom = 8.dp)) }
-        state.status?.let { Spacer(modifier = Modifier.height(16.dp)); CerberusStatusCard(status = it) }
-        Spacer(modifier = Modifier.weight(1f))
-        state.lastError?.let { Text(text = "Last Error: $it", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(bottom = 16.dp)) }
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .verticalScroll(scrollState)
+        ) {
+            Text("Cerberus Details", style = MaterialTheme.typography.headlineSmall)
+            Spacer(modifier = Modifier.height(16.dp))
+            StatusItem("Signal Strength:", "${state.rssi} dBm")
+            state.activeLogFile?.let { StatusItem("Logging To: ", it.name) }
+            state.rawPacket?.let {
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(text = "Raw Packet: $it", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(bottom = 8.dp))
+            }
+            state.status?.let {
+                Spacer(modifier = Modifier.height(16.dp))
+                CerberusStatusCard(status = it)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+        state.lastError?.let {
+            Text(
+                text = "Last Error: $it",
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(bottom = 12.dp)
+            )
+        }
         OutlinedButton(onClick = onReturn) { Text("Return") }
     }
 }

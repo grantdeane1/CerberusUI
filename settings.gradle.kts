@@ -19,5 +19,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "CerberusDisplay"
+rootProject.name = "CerberusDisplay_nRF5"
 include(":app")
